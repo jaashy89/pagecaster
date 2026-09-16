@@ -275,6 +275,9 @@ class PageCaster {
       '-framerate', this.framerate.toString(),  // Input framerate
       '-s', `${this.screenWidth}x${this.screenHeight}`,
       '-draw_mouse', '0',
+      '-thread_queue_size', '512',
+      '-probesize', '50M',
+      '-analyzeduration', '10000000',
       '-i', ':99.0'
     ];
 
@@ -301,7 +304,7 @@ class PageCaster {
       '-pix_fmt', 'yuv420p',
       '-g', (this.framerate * 2).toString(),  // Keyframe every 2 seconds
       '-r', this.framerate.toString(),  // Output framerate
-      '-vsync', 'cfr',  // Constant frame rate
+      '-fps_mode', 'cfr',  // Constant frame rate
       '-c:a', 'aac',
       '-b:a', '128k',
       '-ac', '2',
