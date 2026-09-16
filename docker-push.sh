@@ -9,7 +9,7 @@
 #   ./docker-push.sh -u <dockerhub-username> [-v <version>]
 #
 # Defaults:
-#   DOCKER_USERNAME -> rmitchellscott (override with -u or DOCKER_USERNAME env)
+#   DOCKER_USERNAME -> jaashy (override with -u or DOCKER_USERNAME env)
 #   VERSION         -> latest
 
 set -e  # Exit on error
@@ -22,7 +22,7 @@ print_usage() {
     echo "Examples:"
     echo "  ./docker-push.sh v1.4.3"
     echo "  ./docker-push.sh 1.4.3"
-    echo "  ./docker-push.sh -u rmitchellscott -v 1.4.3"
+    echo "  ./docker-push.sh -u jaashy -v 1.4.3"
     echo ""
 }
 
@@ -34,7 +34,7 @@ is_valid_docker_username() {
     [[ "$1" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]]
 }
 
-DOCKER_USERNAME="${DOCKER_USERNAME:-rmitchellscott}"
+DOCKER_USERNAME="${DOCKER_USERNAME:-jaashy}"
 VERSION="latest"
 POSITIONAL=()
 
