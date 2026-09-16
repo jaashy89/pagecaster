@@ -32,4 +32,7 @@ COPY entrypoint.sh .
 
 RUN chmod +x entrypoint.sh
 
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD wget -qO- http://localhost:8080/healthz || exit 1
+
 CMD ["bash", "entrypoint.sh"]

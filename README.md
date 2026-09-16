@@ -163,11 +163,34 @@ spec:
 | RTMP_URL               | yes       | RTMP URL to stream to | rtmp://supercool.stream:1935/live |
 | SCREEN_HEIGHT           | no        | Height of browser window (default: 480) | 480 |
 | SCREEN_WIDTH          | no        | Width of browser window (default: 854) | 854 |
-| FFMPEG_PRESET         | no        | FFmpeg encoding preset (default: veryfast) | medium |
+| FFMPEG_PRESET         | no        | FFmpeg encoding preset (default: medium) | veryfast |
+| FFMPEG_TUNE           | no        | Optional x264 tune (e.g. `zerolatency`, `film`; default: none) | film |
 | FRAMERATE             | no        | Video framerate (default: 30) | 60 |
+| CRF                   | no        | x264 quality (lower = better, default: 23) | 18 |
+| MAXRATE               | no        | Max video bitrate (default: 2000k) | 3000k |
+| HEALTH_PORT           | no        | Port for the HTTP health check endpoint (default: 8080) | 8080 |
 
 ## Audio Source Options
 
 - **browser**: Captures audio directly from the webpage using pulseaudio
 - **icecast**: Uses an external Icecast stream as the audio source (maintains backward compatibility)
 - **silent**: Generates a silent audio track for video-only streaming
+
+## Health Check
+
+The application exposes an HTTP health endpoint at `/healthz` (or `/health`) on port `8080` (configurable via `HEALTH_PORT`). It returns `200` when the stream is healthy and `503` when degraded:
+
+```shell
+curl http://localhost:8080/healthz
+```
+
+```json
+{
+  "status": "ok",
+  "ffmpegRunning": true,
+  "browserConnected": true,
+  "uptimeSeconds": 1234
+}
+```
+
+Use this with your orchestrator's liveness/readiness probes (e.g. Kubernetes `livenessProbe` or Docker `HEALTHCHECK`).

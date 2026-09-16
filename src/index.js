@@ -1,9 +1,6 @@
 const puppeteer = require('puppeteer');
-const { getStream } = require('puppeteer-stream');
 const { spawn } = require('child_process');
-const fs = require('fs');
-const path = require('path');
-const { PassThrough } = require('stream');
+const http = require('http');
 
 class PageCaster {
   constructor() {
@@ -15,13 +12,20 @@ class PageCaster {
     this.iceUrl = process.env.ICE_URL;
     this.screenWidth = parseInt(process.env.SCREEN_WIDTH) || 854;
     this.screenHeight = parseInt(process.env.SCREEN_HEIGHT) || 480;
-    this.ffmpegPreset = process.env.FFMPEG_PRESET || 'veryfast';
+    this.ffmpegPreset = process.env.FFMPEG_PRESET || 'medium';
+    this.ffmpegTune = process.env.FFMPEG_TUNE || '';
     this.framerate = parseInt(process.env.FRAMERATE) || 30;
+    this.crf = parseInt(process.env.CRF) || 23;
+    this.maxrate = process.env.MAXRATE || '2000k';
     
     this.browser = null;
     this.page = null;
     this.ffmpegProcess = null;
-    this.audioStream = null;
+    this.shuttingDown = false;
+    this.restartAttempts = 0;
+    this.ffmpegStartTime = 0;
+    this.ffmpegRunning = false;
+    this.healthServer = null;
   }
 
   validateEnvironment() {
@@ -62,6 +66,17 @@ class PageCaster {
 
       this.page = await this.browser.newPage();
       console.log('New page created');
+
+      // Watchdog: if the page crashes or the browser disconnects, exit so the
+      // container restart policy can bring us back up cleanly.
+      this.page.on('error', (error) => {
+        console.error('Page crashed:', error);
+        this.fatalError('Page crashed');
+      });
+      this.browser.on('disconnected', () => {
+        console.error('Browser disconnected unexpectedly');
+        this.fatalError('Browser disconnected');
+      });
       
       await this.page.setViewport({
         width: this.screenWidth,
@@ -190,6 +205,12 @@ class PageCaster {
     
     console.log('Starting FFmpeg with args:', ffmpegArgs.join(' '));
     
+    this.startFFmpeg(ffmpegArgs);
+  }
+
+  startFFmpeg(ffmpegArgs) {
+    this.ffmpegStartTime = Date.now();
+    this.ffmpegRunning = true;
     this.ffmpegProcess = spawn('ffmpeg', ffmpegArgs, {
       stdio: ['ignore', 'pipe', 'pipe']
     });
@@ -204,24 +225,54 @@ class PageCaster {
 
     this.ffmpegProcess.on('close', (code) => {
       console.log(`FFmpeg process exited with code ${code}`);
-      this.cleanup();
+      this.handleFFmpegExit(code);
     });
 
     this.ffmpegProcess.on('error', (error) => {
       console.error('FFmpeg process error:', error);
-      this.cleanup();
+      this.handleFFmpegExit(-1);
     });
 
     // FFmpeg handles X11 capture directly - no screenshot loop needed
     console.log('FFmpeg started - X11 screen capture in progress...');
   }
 
+  handleFFmpegExit(code) {
+    this.ffmpegRunning = false;
+    if (this.shuttingDown) {
+      console.log('Shutting down, not restarting FFmpeg.');
+      return;
+    }
+
+    // Reset backoff if the stream ran stably for a while
+    const runDuration = Date.now() - this.ffmpegStartTime;
+    if (runDuration > 60000) {
+      this.restartAttempts = 0;
+    }
+
+    this.restartAttempts++;
+    const delay = Math.min(1000 * Math.pow(2, this.restartAttempts - 1), 30000);
+    console.log(`FFmpeg exited (code ${code}) after ${Math.round(runDuration / 1000)}s. Restarting in ${delay}ms (attempt ${this.restartAttempts})...`);
+
+    setTimeout(async () => {
+      if (this.shuttingDown) return;
+      try {
+        await this.startScreencast();
+      } catch (error) {
+        console.error('Failed to restart FFmpeg:', error);
+        this.handleFFmpegExit(-1);
+      }
+    }, delay);
+  }
+
   buildFFmpegArgs(audioConfig) {
     // Use X11 capture for better performance
     const baseArgs = [
       '-y',
+      '-nostats',
+      '-loglevel', 'warning',
       '-f', 'x11grab',
-      '-r', this.framerate.toString(),  // Input framerate
+      '-framerate', this.framerate.toString(),  // Input framerate
       '-s', `${this.screenWidth}x${this.screenHeight}`,
       '-draw_mouse', '0',
       '-i', ':99.0'
@@ -230,11 +281,11 @@ class PageCaster {
     const audioArgs = [];
     switch (audioConfig.type) {
       case 'url':
-        audioArgs.push('-i', audioConfig.source);
+        audioArgs.push('-thread_queue_size', '512', '-i', audioConfig.source);
         break;
       case 'stream':
         // Use PulseAudio to capture from our virtual audio device
-        audioArgs.push('-f', 'pulse', '-i', 'virtual-audio.monitor');
+        audioArgs.push('-thread_queue_size', '512', '-f', 'pulse', '-i', 'virtual-audio.monitor');
         break;
       case 'silent':
         audioArgs.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
@@ -244,27 +295,38 @@ class PageCaster {
     const outputArgs = [
       '-c:v', 'libx264',
       '-preset', this.ffmpegPreset,
-      '-tune', 'zerolatency',
-      '-maxrate', '3000k',
+      '-crf', this.crf.toString(),  // Quality (lower = better, 23 default)
+      '-maxrate', this.maxrate,
       '-bufsize', '6000k',
       '-pix_fmt', 'yuv420p',
+      '-g', (this.framerate * 2).toString(),  // Keyframe every 2 seconds
       '-r', this.framerate.toString(),  // Output framerate
       '-vsync', 'cfr',  // Constant frame rate
       '-c:a', 'aac',
       '-b:a', '128k',
       '-ac', '2',
+      '-flush_packets', '1',
+      '-rtmp_live', 'live',
+      '-rw_timeout', '10000000',
       '-f', 'flv',
       this.rtmpUrl
     ];
+
+    // Tune is optional; 'zerolatency' trades quality for latency. For a
+    // web-page stream, latency is rarely critical, so default to no tune.
+    if (this.ffmpegTune) {
+      outputArgs.splice(outputArgs.indexOf('-preset') + 2, 0, '-tune', this.ffmpegTune);
+    }
 
     return [...baseArgs, ...audioArgs, ...outputArgs];
   }
 
   async cleanup() {
     console.log('Cleaning up resources...');
+    this.shuttingDown = true;
     
-    if (this.audioStream) {
-      this.audioStream.destroy();
+    if (this.healthServer) {
+      this.healthServer.close();
     }
     
     if (this.ffmpegProcess && !this.ffmpegProcess.killed) {
@@ -280,6 +342,34 @@ class PageCaster {
     }
   }
 
+  fatalError(reason) {
+    console.error(`Fatal error: ${reason}. Exiting to allow restart policy to recover.`);
+    this.shuttingDown = true;
+    process.exit(1);
+  }
+
+  startHealthServer() {
+    const port = parseInt(process.env.HEALTH_PORT) || 8080;
+    this.healthServer = http.createServer((req, res) => {
+      if (req.url === '/healthz' || req.url === '/health') {
+        const healthy = this.ffmpegRunning && this.browser && this.browser.isConnected();
+        res.writeHead(healthy ? 200 : 503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          status: healthy ? 'ok' : 'degraded',
+          ffmpegRunning: this.ffmpegRunning,
+          browserConnected: !!(this.browser && this.browser.isConnected()),
+          uptimeSeconds: Math.round(process.uptime())
+        }));
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
+    });
+    this.healthServer.listen(port, () => {
+      console.log(`Health check server listening on port ${port}`);
+    });
+  }
+
   async start() {
     try {
       console.log('Starting PageCaster...');
@@ -289,6 +379,7 @@ class PageCaster {
       console.log(`Screen size: ${this.screenWidth}x${this.screenHeight}`);
       console.log(`Framerate: ${this.framerate}fps`);
       
+      this.startHealthServer();
       await this.setupBrowser();
       await this.startScreencast();
       
