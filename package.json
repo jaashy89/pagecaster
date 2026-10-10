@@ -8,8 +8,7 @@
     "dev": "nodemon src/index.js"
   },
   "dependencies": {
-    "puppeteer": "^23.0.0",
-    "puppeteer-stream": "^3.0.20"
+    "puppeteer": "^23.0.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"

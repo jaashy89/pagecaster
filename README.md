@@ -163,11 +163,16 @@ spec:
 | RTMP_URL               | yes       | RTMP URL to stream to | rtmp://supercool.stream:1935/live |
 | SCREEN_HEIGHT           | no        | Height of browser window (default: 480) | 480 |
 | SCREEN_WIDTH          | no        | Width of browser window (default: 854) | 854 |
-| FFMPEG_PRESET         | no        | FFmpeg encoding preset (default: medium) | veryfast |
+| FFMPEG_PRESET         | no        | FFmpeg encoding preset (default: veryfast) | veryfast |
 | FFMPEG_TUNE           | no        | Optional x264 tune (e.g. `zerolatency`, `film`; default: none) | film |
 | FRAMERATE             | no        | Video framerate (default: 30) | 60 |
 | CRF                   | no        | x264 quality (lower = better, default: 23) | 18 |
 | MAXRATE               | no        | Max video bitrate (default: 2000k) | 3000k |
+| FFMPEG_THREADS        | no        | Cap on FFmpeg encoder threads (default: 2) | 2 |
+| MAX_RESTART_ATTEMPTS  | no        | Max consecutive FFmpeg restarts before giving up (default: 5) | 5 |
+| RECYCLE_HOURS         | no        | Reload the page every N hours to free leaked memory (default: 6, 0 = off) | 6 |
+| MAX_HEAP_MB           | no        | Reload the page if its JS heap exceeds this (default: 500) | 500 |
+| STALL_SECONDS         | no        | Kill FFmpeg if no frames flow for this long (default: 30) | 30 |
 | HEALTH_PORT           | no        | Port for the HTTP health check endpoint (default: 8080) | 8080 |
 
 ## Audio Source Options
