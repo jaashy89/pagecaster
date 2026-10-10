@@ -15,7 +15,7 @@ class PageCaster {
     this.screenHeight = int(process.env.SCREEN_HEIGHT, 480);
     this.ffmpegPreset = process.env.FFMPEG_PRESET || 'veryfast';
     this.ffmpegTune = process.env.FFMPEG_TUNE || '';
-    this.ffmpegThreads = process.env.FFMPEG_THREADS || '2'; // cap CPU use
+    this.ffmpegThreads = process.env.FFMPEG_THREADS || '3'; // cap CPU use
     this.framerate = int(process.env.FRAMERATE, 30);
     this.crf = int(process.env.CRF, 23);
     this.maxrate = process.env.MAXRATE || '2000k';
