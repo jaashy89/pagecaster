@@ -70,5 +70,18 @@ fi
 node src/index.js &
 NODE_PID=$!
 trap 'kill -TERM "$NODE_PID" 2>/dev/null' TERM INT
+
+# Watchdog: if Xvfb dies, stop Node so the restart policy brings everything back clean
+(
+  while kill -0 "$NODE_PID" 2>/dev/null; do
+    if ! kill -0 "$XVFB_PID" 2>/dev/null; then
+      echo "Xvfb died; stopping Node for a clean restart."
+      kill -TERM "$NODE_PID" 2>/dev/null
+      break
+    fi
+    sleep 5
+  done
+) &
+
 wait "$NODE_PID"
 exit $?

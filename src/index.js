@@ -1,6 +1,7 @@
 const puppeteer = require('puppeteer');
 const { spawn } = require('child_process');
 const http = require('http');
+const fs = require('fs');
 
 const int = (v, d) => (Number.isFinite(parseInt(v)) ? parseInt(v) : d);
 const flag = (v, d) => (v === undefined || v === '' ? d : !['0', 'false', 'no', 'off'].includes(String(v).toLowerCase()));
@@ -26,13 +27,26 @@ class PageCaster {
 
     // Browser CPU options
     this.disableGpu = flag(process.env.DISABLE_GPU, true);     // set DISABLE_GPU=0 if the host has a real GPU
-    this.reduceMotion = flag(process.env.REDUCE_MOTION, false); // REDUCE_MOTION=1 kills CSS animations/transitions
+    this.reduceMotion = flag(process.env.REDUCE_MOTION, true);  // REDUCE_MOTION=0 to keep CSS animations/transitions
+    this.disableEffects = flag(process.env.DISABLE_EFFECTS, true); // kill backdrop-filter/will-change (huge software-render cost)
+    this.pageCpuThrottle = int(process.env.PAGE_CPU_THROTTLE, 2); // renderer CPU throttle factor (1 = off)
+    this.blockResourceTypes = (process.env.BLOCK_RESOURCE_TYPES || 'font')
+      .split(',')
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+    this.blockAssets = (process.env.BLOCK_ASSETS || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
 
     // Long-run hygiene
     this.recycleHours = int(process.env.RECYCLE_HOURS, 6);
     this.maxHeapMb = int(process.env.MAX_HEAP_MB, 500);
     this.stallSeconds = int(process.env.STALL_SECONDS, 30);
     this.maintIntervalSec = int(process.env.MAINT_INTERVAL_SEC, 15);
+    this.maxUptimeHours = int(process.env.MAX_UPTIME_HOURS, 24);     // clean full restart (0 = off); needs a restart policy
+    this.maxContainerMb = int(process.env.MAX_CONTAINER_MB, 0);      // restart if whole container exceeds this (0 = off)
+    this.startedAt = Date.now();
 
     this.browser = null;
     this.page = null;
@@ -138,6 +152,22 @@ class PageCaster {
 
   async loadPage(page) {
     await page.setViewport({ width: this.screenWidth, height: this.screenHeight });
+
+    // Block heavy/irrelevant resources to cut network + renderer CPU over time.
+    // Fonts are the default: they're large, and text renders fine with fallbacks.
+    if (this.blockResourceTypes.length || this.blockAssets.length) {
+      await page.setRequestInterception(true);
+      page.on('request', (req) => {
+        const type = (req.resourceType && req.resourceType()) || '';
+        const url = req.url();
+        const blocked =
+          this.blockResourceTypes.includes(type.toLowerCase()) ||
+          this.blockAssets.some((pat) => url.includes(pat));
+        if (blocked) req.abort();
+        else req.continue();
+      });
+    }
+
     if (this.reduceMotion) {
       await page.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'reduce' }]).catch(() => {});
       await page.evaluateOnNewDocument(() => {
@@ -148,9 +178,35 @@ class PageCaster {
         });
       }).catch(() => {});
     }
+
+    // Kill backdrop-filter and will-change: the two most expensive CSS features
+    // when Chromium is software-rasterizing (no GPU). backdrop-filter in
+    // particular is recomputed every frame and is a huge CPU sink.
+    if (this.disableEffects) {
+      await page.evaluateOnNewDocument(() => {
+        document.addEventListener('DOMContentLoaded', () => {
+          const s = document.createElement('style');
+          s.textContent = '*{backdrop-filter:none!important;-webkit-backdrop-filter:none!important;will-change:auto!important}';
+          document.documentElement.appendChild(s);
+        });
+      }).catch(() => {});
+    }
     console.log(`Navigating to: ${this.webUrl}`);
     await page.goto(this.webUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await new Promise((r) => setTimeout(r, 2000));
+
+    // Throttle the renderer's CPU directly (CDP). This is the biggest lever for
+    // cutting Chromium's software-rasterization cost when there's no GPU.
+    if (this.pageCpuThrottle > 1) {
+      try {
+        const cdp = await page.createCDPSession();
+        await cdp.send('Emulation.setCPUThrottlingRate', { rate: this.pageCpuThrottle });
+        console.log(`Renderer CPU throttled to 1/${this.pageCpuThrottle}`);
+      } catch (e) {
+        console.warn('CPU throttling unavailable:', e.message);
+      }
+    }
+
     this.pageStartedAt = Date.now();
   }
 
@@ -193,6 +249,13 @@ class PageCaster {
       .catch(() => {});
   }
 
+  containerMemoryMb() {
+    for (const f of ['/sys/fs/cgroup/memory.current', '/sys/fs/cgroup/memory/memory.usage_in_bytes']) {
+      try { return parseInt(fs.readFileSync(f, 'utf8'), 10) / 1048576; } catch (_) {}
+    }
+    return 0;
+  }
+
   startMaintenance() {
     this.maintTimer = setInterval(async () => {
       if (this.shuttingDown || this.isMaintaining) return;
@@ -203,6 +266,19 @@ class PageCaster {
           console.warn(`FFmpeg made no progress for ${this.stallSeconds}s, killing it.`);
           this.lastProgress = Date.now();
           try { this.ffmpegProcess.kill('SIGKILL'); } catch (_) {}
+        }
+
+        // Full-process hygiene: catches native/Chrome/FFmpeg leaks that the JS heap check can't see
+        if (this.maxUptimeHours > 0 && Date.now() - this.startedAt > this.maxUptimeHours * 3600 * 1000) {
+          console.log(`Max uptime ${this.maxUptimeHours}h reached, exiting for a clean restart.`);
+          await this.cleanup();
+          process.exit(0);
+        }
+        if (this.maxContainerMb > 0) {
+          const mb = this.containerMemoryMb();
+          if (mb > this.maxContainerMb) {
+            return this.fatalError(`Container memory ${Math.round(mb)}MB > ${this.maxContainerMb}MB`);
+          }
         }
 
         if (this.recycling || !this.page || Date.now() < this.nextRecycleAllowed) return;

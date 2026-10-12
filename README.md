@@ -164,15 +164,25 @@ spec:
 | SCREEN_HEIGHT           | no        | Height of browser window (default: 360) | 360 |
 | SCREEN_WIDTH          | no        | Width of browser window (default: 640) | 640 |
 | FFMPEG_PRESET         | no        | FFmpeg encoding preset (default: ultrafast) | ultrafast |
-| FFMPEG_TUNE           | no        | Optional x264 tune (e.g. `zerolatency`, `film`; default: none) | film |
-| FRAMERATE             | no        | Video framerate (default: 15) | 30 |
-| CRF                   | no        | x264 quality (lower = better, default: 23) | 18 |
-| MAXRATE               | no        | Max video bitrate (default: 2000k) | 3000k |
+| FFMPEG_TUNE           | no        | Optional x264 tune (default: zerolatency) | zerolatency |
+| FRAMERATE             | no        | Video framerate (default: 10) | 15 |
+| CRF                   | no        | x264 quality (lower = better, default: 25) | 23 |
+| MAXRATE               | no        | Max video bitrate (default: 1500k) | 2000k |
+| AUDIO_BITRATE         | no        | Audio bitrate (default: 96k) | 128k |
 | FFMPEG_THREADS        | no        | Cap on FFmpeg encoder threads (default: 2) | 2 |
+| PAGE_CPU_THROTTLE     | no        | Renderer CPU throttle factor via CDP (default: 2, 1 = off) | 2 |
+| REDUCE_MOTION         | no        | Kill CSS animations/transitions (default: true) | true |
+| DISABLE_EFFECTS       | no        | Kill backdrop-filter/will-change (default: true) | true |
+| DISABLE_GPU           | no        | Disable GPU (default: true; set 0 if host has a real GPU) | true |
+| BLOCK_RESOURCE_TYPES  | no        | Comma-separated resource types to block (default: font) | font,image |
+| BLOCK_ASSETS          | no        | Comma-separated URL substrings to block (default: none) | analytics,ads |
 | MAX_RESTART_ATTEMPTS  | no        | Max consecutive FFmpeg restarts before giving up (default: 5) | 5 |
 | RECYCLE_HOURS         | no        | Reload the page every N hours to free leaked memory (default: 6, 0 = off) | 6 |
 | MAX_HEAP_MB           | no        | Reload the page if its JS heap exceeds this (default: 500) | 500 |
 | STALL_SECONDS         | no        | Kill FFmpeg if no frames flow for this long (default: 30) | 30 |
+| MAINT_INTERVAL_SEC    | no        | Maintenance loop interval (default: 15) | 15 |
+| MAX_UPTIME_HOURS      | no        | Clean full restart after N hours (default: 24, 0 = off) | 24 |
+| MAX_CONTAINER_MB      | no        | Restart if container memory exceeds this (default: 0 = off) | 800 |
 | HEALTH_PORT           | no        | Port for the HTTP health check endpoint (default: 8080) | 8080 |
 
 ## Audio Source Options
