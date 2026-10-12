@@ -1,7 +1,7 @@
 # Pagecaster
 <img src="assets/logo.svg" alt="Ephemeris Icon" width="125" align="right">
 <p align="justify">
-Pagecaster streams a web browser to an RTMP server with flexible audio source options! It uses Puppeteer to control a headless browser and streams the content via FFmpeg to an RTMP server. You can choose between webpage audio capture, external Icecast streams, or silent audio. A 480p stream typically consumes about half a CPU core and 300MB of RAM.
+Pagecaster streams a web browser to an RTMP server with flexible audio source options! It uses Puppeteer to control a headless browser and streams the content via FFmpeg to an RTMP server. You can choose between webpage audio capture, external Icecast streams, or silent audio. A 360p stream typically consumes about a quarter of a CPU core and 250MB of RAM.
 </p>
 
 # Examples
@@ -161,11 +161,11 @@ spec:
 | AUDIO_SOURCE          | no        | Audio source: 'browser', 'icecast', or 'silent' (default: auto-detects to 'icecast' if ICE_URL is set, otherwise 'silent') | browser |
 | ICE_URL               | conditional | Icecast URL (required if AUDIO_SOURCE=icecast) | https://radio.supercool.stream |
 | RTMP_URL               | yes       | RTMP URL to stream to | rtmp://supercool.stream:1935/live |
-| SCREEN_HEIGHT           | no        | Height of browser window (default: 480) | 480 |
-| SCREEN_WIDTH          | no        | Width of browser window (default: 854) | 854 |
-| FFMPEG_PRESET         | no        | FFmpeg encoding preset (default: veryfast) | veryfast |
+| SCREEN_HEIGHT           | no        | Height of browser window (default: 360) | 360 |
+| SCREEN_WIDTH          | no        | Width of browser window (default: 640) | 640 |
+| FFMPEG_PRESET         | no        | FFmpeg encoding preset (default: ultrafast) | ultrafast |
 | FFMPEG_TUNE           | no        | Optional x264 tune (e.g. `zerolatency`, `film`; default: none) | film |
-| FRAMERATE             | no        | Video framerate (default: 30) | 60 |
+| FRAMERATE             | no        | Video framerate (default: 15) | 30 |
 | CRF                   | no        | x264 quality (lower = better, default: 23) | 18 |
 | MAXRATE               | no        | Max video bitrate (default: 2000k) | 3000k |
 | FFMPEG_THREADS        | no        | Cap on FFmpeg encoder threads (default: 2) | 2 |

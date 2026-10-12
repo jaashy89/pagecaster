@@ -3,6 +3,7 @@ const { spawn } = require('child_process');
 const http = require('http');
 
 const int = (v, d) => (Number.isFinite(parseInt(v)) ? parseInt(v) : d);
+const flag = (v, d) => (v === undefined || v === '' ? d : !['0', 'false', 'no', 'off'].includes(String(v).toLowerCase()));
 
 class PageCaster {
   constructor() {
@@ -11,20 +12,27 @@ class PageCaster {
     this.webUrl = process.env.WEB_URL;
     this.rtmpUrl = process.env.RTMP_URL;
     this.iceUrl = process.env.ICE_URL;
-    this.screenWidth = int(process.env.SCREEN_WIDTH, 854);
-    this.screenHeight = int(process.env.SCREEN_HEIGHT, 480);
-    this.ffmpegPreset = process.env.FFMPEG_PRESET || 'veryfast';
-    this.ffmpegTune = process.env.FFMPEG_TUNE || '';
-    this.ffmpegThreads = process.env.FFMPEG_THREADS || '3'; // cap CPU use
-    this.framerate = int(process.env.FRAMERATE, 30);
-    this.crf = int(process.env.CRF, 23);
-    this.maxrate = process.env.MAXRATE || '2000k';
+    this.display = process.env.DISPLAY_NUM || ':99.0';
+    this.screenWidth = int(process.env.SCREEN_WIDTH, 640);
+    this.screenHeight = int(process.env.SCREEN_HEIGHT, 360);
+    this.ffmpegPreset = process.env.FFMPEG_PRESET || 'ultrafast';
+    this.ffmpegTune = process.env.FFMPEG_TUNE || 'zerolatency';
+    this.ffmpegThreads = process.env.FFMPEG_THREADS || '2';
+    this.framerate = int(process.env.FRAMERATE, 10);          // was 15: biggest CPU saver
+    this.crf = int(process.env.CRF, 25);                      // slightly lighter than 23
+    this.maxrate = process.env.MAXRATE || '1500k';
+    this.audioBitrate = process.env.AUDIO_BITRATE || '96k';
     this.maxRestartAttempts = int(process.env.MAX_RESTART_ATTEMPTS, 5);
 
+    // Browser CPU options
+    this.disableGpu = flag(process.env.DISABLE_GPU, true);     // set DISABLE_GPU=0 if the host has a real GPU
+    this.reduceMotion = flag(process.env.REDUCE_MOTION, false); // REDUCE_MOTION=1 kills CSS animations/transitions
+
     // Long-run hygiene
-    this.recycleHours = int(process.env.RECYCLE_HOURS, 6);       // fresh page every N hours (0 = off)
-    this.maxHeapMb = int(process.env.MAX_HEAP_MB, 500);          // reload page if JS heap exceeds this
-    this.stallSeconds = int(process.env.STALL_SECONDS, 30);      // kill FFmpeg if no frames for this long
+    this.recycleHours = int(process.env.RECYCLE_HOURS, 6);
+    this.maxHeapMb = int(process.env.MAX_HEAP_MB, 500);
+    this.stallSeconds = int(process.env.STALL_SECONDS, 30);
+    this.maintIntervalSec = int(process.env.MAINT_INTERVAL_SEC, 15);
 
     this.browser = null;
     this.page = null;
@@ -47,7 +55,6 @@ class PageCaster {
     this.audioConfig = null;
     this.healthServer = null;
 
-    // Log rate limiting (prevents log flooding -> disk growth / CPU)
     this.logBudget = 20;
     this.logWindow = Date.now();
     this.suppressed = 0;
@@ -65,36 +72,48 @@ class PageCaster {
 
   async setupBrowser() {
     console.log('Starting Puppeteer browser...');
+    const args = [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--no-first-run',
+      `--window-size=${this.screenWidth},${this.screenHeight}`,
+      '--window-position=0,0',
+      '--force-device-scale-factor=1',
+      '--autoplay-policy=no-user-gesture-required',
+      '--allow-running-insecure-content',
+      '--disable-web-security',
+      '--disable-features=VizDisplayCompositor,Translate,MediaRouter,IsolateOrigins,site-per-process,OptimizationHints',
+      '--disable-site-isolation-trials',
+      '--enable-features=PulseAudio',
+      '--kiosk',
+      // Less background work = less CPU/RAM over time
+      '--disable-extensions',
+      '--disable-background-networking',
+      '--disable-component-update',
+      '--disable-sync',
+      '--disable-default-apps',
+      '--disable-breakpad',
+      '--disable-crash-reporter',
+      '--disable-domain-reliability',
+      '--disable-client-side-phishing-detection',
+      '--disable-hang-monitor',
+      '--disable-prompt-on-repost',
+      '--disable-smooth-scrolling',
+      '--disable-lcd-text',
+      '--disable-font-subpixel-positioning',
+      '--metrics-recording-only',
+      '--no-default-browser-check',
+      '--password-store=basic',
+      '--use-mock-keychain',
+      `--js-flags=--max-old-space-size=${this.maxHeapMb * 2}`
+    ];
+    if (this.disableGpu) args.push('--disable-gpu');
+
     this.browser = await puppeteer.launch({
       headless: false,
       ignoreDefaultArgs: ['--enable-automation'],
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--no-first-run',
-        `--window-size=${this.screenWidth},${this.screenHeight}`,
-        '--window-position=0,0',
-        '--autoplay-policy=no-user-gesture-required',
-        '--allow-running-insecure-content',
-        '--disable-web-security',
-        '--disable-features=VizDisplayCompositor,Translate,MediaRouter',
-        '--enable-features=PulseAudio',
-        '--kiosk',
-        // Less background work = less CPU/RAM over time
-        '--disable-extensions',
-        '--disable-background-networking',
-        '--disable-component-update',
-        '--disable-sync',
-        '--disable-default-apps',
-        '--disable-breakpad',
-        '--disable-crash-reporter',
-        '--metrics-recording-only',
-        '--no-default-browser-check',
-        '--password-store=basic',
-        `--js-flags=--max-old-space-size=${this.maxHeapMb * 2}`
-      ],
+      args,
       defaultViewport: null
     });
 
@@ -102,7 +121,6 @@ class PageCaster {
       if (!this.shuttingDown) this.fatalError('Browser disconnected');
     });
 
-    // Reuse the initial tab instead of leaving an extra about:blank renderer alive
     const [first] = await this.browser.pages();
     this.page = first || (await this.browser.newPage());
     this.attachPage(this.page);
@@ -115,18 +133,27 @@ class PageCaster {
       console.error('Page crashed:', e);
       if (!this.shuttingDown) this.fatalError('Page crashed');
     });
-    page.on('pageerror', () => {}); // swallow page JS errors; don't accumulate listeners/logs
+    page.on('pageerror', () => {});
   }
 
   async loadPage(page) {
     await page.setViewport({ width: this.screenWidth, height: this.screenHeight });
+    if (this.reduceMotion) {
+      await page.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'reduce' }]).catch(() => {});
+      await page.evaluateOnNewDocument(() => {
+        document.addEventListener('DOMContentLoaded', () => {
+          const s = document.createElement('style');
+          s.textContent = '*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}';
+          document.documentElement.appendChild(s);
+        });
+      }).catch(() => {});
+    }
     console.log(`Navigating to: ${this.webUrl}`);
     await page.goto(this.webUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await new Promise((r) => setTimeout(r, 2000));
     this.pageStartedAt = Date.now();
   }
 
-  // Replace the page with a fresh one (frees leaked renderer memory)
   async recyclePage(reason) {
     if (this.recycling || this.shuttingDown) return;
     this.recycling = true;
@@ -141,23 +168,20 @@ class PageCaster {
       this.page = fresh;
       this.recycleFailures = 0;
 
-      // Browser-audio mode: make sure media on the new page is playing
       if (this.audioSource.toLowerCase() === 'browser') await this.kickMedia(fresh);
 
       old.removeAllListeners();
       await old.close().catch(() => {});
     } catch (e) {
       console.error('Page recycle failed:', e.message);
-      // Don't leak the half-loaded tab
       if (fresh && fresh !== this.page) {
         fresh.removeAllListeners();
         await fresh.close().catch(() => {});
       }
-      // Tolerate transient failures (site briefly down), but not a broken browser
       if (++this.recycleFailures >= 3) {
         this.fatalError('Page recycle failed 3 times in a row');
       }
-      this.nextRecycleAllowed = Date.now() + 60000; // cooldown before retrying
+      this.nextRecycleAllowed = Date.now() + 60000;
     } finally {
       this.recycling = false;
     }
@@ -169,13 +193,11 @@ class PageCaster {
       .catch(() => {});
   }
 
-  // Runs every 10s: FFmpeg stall check, heap check, scheduled recycle
   startMaintenance() {
     this.maintTimer = setInterval(async () => {
       if (this.shuttingDown || this.isMaintaining) return;
       this.isMaintaining = true;
       try {
-        // FFmpeg stalled (e.g. hung RTMP socket) but process still alive
         if (this.ffmpegRunning && this.lastProgress &&
             Date.now() - this.lastProgress > this.stallSeconds * 1000) {
           console.warn(`FFmpeg made no progress for ${this.stallSeconds}s, killing it.`);
@@ -185,7 +207,6 @@ class PageCaster {
 
         if (this.recycling || !this.page || Date.now() < this.nextRecycleAllowed) return;
 
-        // Heap check (with timeout: a frozen renderer would otherwise hang forever)
         try {
           const m = await Promise.race([
             this.page.metrics(),
@@ -201,7 +222,6 @@ class PageCaster {
           }
         }
 
-        // Scheduled recycle
         if (this.recycleHours > 0 &&
             Date.now() - this.pageStartedAt > this.recycleHours * 3600 * 1000) {
           await this.recyclePage('scheduled');
@@ -209,7 +229,7 @@ class PageCaster {
       } finally {
         this.isMaintaining = false;
       }
-    }, 10000);
+    }, this.maintIntervalSec * 1000);
   }
 
   // ---------- Audio ----------
@@ -228,7 +248,6 @@ class PageCaster {
       await this.page.waitForFunction(() => document.readyState === 'complete', { timeout: 10000 });
 
       const info = await this.page.evaluate(() => {
-        // Probe with a throwaway context and close it, so we don't leak one
         let state = 'none';
         const Ctx = window.AudioContext || window.webkitAudioContext;
         if (Ctx) {
@@ -291,12 +310,11 @@ class PageCaster {
     const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
     this.ffmpegProcess = proc;
 
-    // `-progress pipe:1` prints key=value lines; "frame=N" is our heartbeat
     let lineBuffer = '';
     proc.stdout.on('data', (d) => {
       lineBuffer += d;
       const lines = lineBuffer.split('\n');
-      lineBuffer = lines.pop().slice(-512); // keep incomplete tail, bounded
+      lineBuffer = lines.pop().slice(-512);
       for (const line of lines) {
         if (!line.startsWith('frame=')) continue;
         const frame = parseInt(line.slice(6), 10);
@@ -319,7 +337,7 @@ class PageCaster {
   }
 
   handleFFmpegExit(code) {
-    if (this.ffmpegExiting) return; // 'close' and 'error' may both fire
+    if (this.ffmpegExiting) return;
     this.ffmpegExiting = true;
     this.ffmpegRunning = false;
     if (this.shuttingDown) return;
@@ -355,10 +373,10 @@ class PageCaster {
       '-progress', 'pipe:1',
       '-f', 'x11grab',
       '-framerate', fps,
-      '-s', `${this.screenWidth}x${this.screenHeight}`,
+      '-video_size', `${this.screenWidth}x${this.screenHeight}`,
       '-draw_mouse', '0',
       '-thread_queue_size', '512',
-      '-i', ':99.0'
+      '-i', this.display
     ];
 
     const audioIn = [];
@@ -370,15 +388,17 @@ class PageCaster {
       '-c:v', 'libx264',
       '-preset', this.ffmpegPreset,
       ...(this.ffmpegTune ? ['-tune', this.ffmpegTune] : []),
+      '-profile:v', 'main',
       '-threads', this.ffmpegThreads,
       '-crf', this.crf.toString(),
       '-maxrate', this.maxrate,
-      '-bufsize', '4000k',
+      '-bufsize', '3000k',
       '-pix_fmt', 'yuv420p',
       '-g', (this.framerate * 2).toString(),
+      '-sc_threshold', '0',
       '-r', fps,
       '-fps_mode', 'cfr',
-      '-c:a', 'aac', '-b:a', '128k', '-ac', '2',
+      '-c:a', 'aac', '-b:a', this.audioBitrate, '-ac', '2', '-ar', '44100',
       '-flush_packets', '1',
       '-rtmp_live', 'live',
       '-rw_timeout', '10000000',
@@ -419,7 +439,6 @@ class PageCaster {
   fatalError(reason) {
     console.error(`Fatal error: ${reason}. Exiting so the restart policy can recover.`);
     this.shuttingDown = true;
-    // Best-effort kill of children so they don't linger as orphans
     try { this.ffmpegProcess && this.ffmpegProcess.kill('SIGKILL'); } catch (_) {}
     try { this.browser && this.browser.process() && this.browser.process().kill('SIGKILL'); } catch (_) {}
     process.exit(1);
